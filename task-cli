@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+
+TASKS_FILE = "tasks.json"
+
+
+def get_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_tasks() -> list:
+    if not os.path.exists(TASKS_FILE):
+        return []
+    try:
+        with open(TASKS_FILE, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return []
+            data = json.loads(content)
+            if isinstance(data, list):
+                return data
+            return []
+    except (json.JSONDecodeError, OSError):
+        print("Error: Failed to read tasks.json. The file may be corrupted.")
+        sys.exit(1)
+
+
+def save_tasks(tasks: list) -> None:
+    try:
+        with open(TASKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(tasks, f, indent=2, ensure_ascii=False)
+    except OSError:
+        print("Error: Failed to write tasks.json.")
+        sys.exit(1)
+
+
+def generate_next_id(tasks: list) -> int:
+    max_id = 0
+    for task in tasks:
+        try:
+            tid = int(task.get("id", 0))
+            if tid > max_id:
+                max_id = tid
+        except (TypeError, ValueError):
+            continue
+    return max_id + 1
+
+
+def find_task(tasks: list, task_id: int):
+    for task in tasks:
+        if task.get("id") == task_id:
+            return task
+    return None
+
+
+def print_usage() -> None:
+    usage = (
+        "Usage:\n"
+        "  task-cli add <description>\n"
+        "  task-cli update <id> <new-description>\n"
+        "  task-cli delete <id>\n"
+        "  task-cli mark-in-progress <id>\n"
+        "  task-cli mark-done <id>\n"
+        "  task-cli list [todo|in-progress|done]\n"
+    )
+    print(usage, end="")
+
+
+def cmd_add(args: list) -> None:
+    if len(args) < 1:
+        print("Error: Description is required for add.")
+        print_usage()
+        sys.exit(1)
+    description = " ".join(args).strip()
+    if not description:
+        print("Error: Description cannot be empty.")
+        sys.exit(1)
+
+    tasks = load_tasks()
+    new_id = generate_next_id(tasks)
+    now = get_now_iso()
+    new_task = {
+        "id": new_id,
+        "description": description,
+        "status": "todo",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    tasks.append(new_task)
+    save_tasks(tasks)
+    print(f"Task added successfully (ID: {new_id})")
+
+
+def cmd_update(args: list) -> None:
+    if len(args) < 2:
+        print("Error: update requires <id> and <new-description>.")
+        print_usage()
+        sys.exit(1)
+    try:
+        task_id = int(args[0])
+    except ValueError:
+        print("Error: <id> must be a number.")
+        sys.exit(1)
+    new_desc = " ".join(args[1:]).strip()
+    if not new_desc:
+        print("Error: New description cannot be empty.")
+        sys.exit(1)
+
+    tasks = load_tasks()
+    task = find_task(tasks, task_id)
+    if not task:
+        print(f"Error: Task with ID {task_id} not found.")
+        sys.exit(1)
+    task["description"] = new_desc
+    task["updatedAt"] = get_now_iso()
+    save_tasks(tasks)
+    print(f"Task {task_id} updated successfully")
+
+
+def cmd_delete(args: list) -> None:
+    if len(args) != 1:
+        print("Error: delete requires exactly one <id> argument.")
+        print_usage()
+        sys.exit(1)
+    try:
+        task_id = int(args[0])
+    except ValueError:
+        print("Error: <id> must be a number.")
+        sys.exit(1)
+
+    tasks = load_tasks()
+    before = len(tasks)
+    tasks = [t for t in tasks if t.get("id") != task_id]
+    if len(tasks) == before:
+        print(f"Error: Task with ID {task_id} not found.")
+        sys.exit(1)
+    save_tasks(tasks)
+    print(f"Task {task_id} deleted successfully")
+
+
+def cmd_mark_status(args: list, new_status: str) -> None:
+    if len(args) != 1:
+        print(f"Error: command requires exactly one <id> argument.")
+        print_usage()
+        sys.exit(1)
+    try:
+        task_id = int(args[0])
+    except ValueError:
+        print("Error: <id> must be a number.")
+        sys.exit(1)
+
+    tasks = load_tasks()
+    task = find_task(tasks, task_id)
+    if not task:
+        print(f"Error: Task with ID {task_id} not found.")
+        sys.exit(1)
+    task["status"] = new_status
+    task["updatedAt"] = get_now_iso()
+    save_tasks(tasks)
+    print(f"Task {task_id} marked as {new_status}")
+
+
+def format_task_line(task: dict) -> str:
+    tid = task.get("id")
+    status = task.get("status")
+    desc = task.get("description", "")
+    created_at = task.get("createdAt", "")
+    updated_at = task.get("updatedAt", "")
+    return f"{tid:>3} | [{status}] {desc} | created: {created_at} | updated: {updated_at}"
+
+
+def cmd_list(args: list) -> None:
+    allowed_statuses = {"todo", "in-progress", "done"}
+    filter_status = None
+    if len(args) == 1:
+        if args[0] not in allowed_statuses:
+            print("Error: Invalid status. Use one of: todo, in-progress, done.")
+            sys.exit(1)
+        filter_status = args[0]
+    elif len(args) > 1:
+        print("Error: list accepts at most one optional status.")
+        print_usage()
+        sys.exit(1)
+
+    tasks = load_tasks()
+    if filter_status:
+        tasks = [t for t in tasks if t.get("status") == filter_status]
+
+    if not tasks:
+        if filter_status:
+            print(f"No tasks with status '{filter_status}'.")
+        else:
+            print("No tasks found.")
+        return
+
+    for task in sorted(tasks, key=lambda t: int(t.get("id", 0))):
+        print(format_task_line(task))
+
+
+def main(argv: list) -> None:
+    if len(argv) < 2:
+        print_usage()
+        sys.exit(1)
+
+    command = argv[1]
+    args = argv[2:]
+
+    if command == "add":
+        cmd_add(args)
+    elif command == "update":
+        cmd_update(args)
+    elif command == "delete":
+        cmd_delete(args)
+    elif command == "mark-in-progress":
+        cmd_mark_status(args, "in-progress")
+    elif command == "mark-done":
+        cmd_mark_status(args, "done")
+    elif command == "list":
+        cmd_list(args)
+    else:
+        print(f"Error: Unknown command '{command}'.")
+        print_usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
+
+
